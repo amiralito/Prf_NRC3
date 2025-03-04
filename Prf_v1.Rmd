@@ -1,0 +1,254 @@
+Load the required libraries
+```{r}
+library(tidyverse)
+library(readxl)
+library(Biostrings)
+library(ggtree)
+library(pheatmap)
+library(reshape2)
+library(svglite)
+```
+
+## 1. import the genome and species metadata:
+```{r}
+# import taxonomy metadata
+taxonomy_metadata <- read_excel("/path/to/Data_S5.xlsx")
+
+taxonomy_metadata_Solanales <- taxonomy_metadata[taxonomy_metadata$Order == "Solanales",]
+
+# export the species names for TimeTree
+write(unique(taxonomy_metadata_Solanales$Species),"/path/to/Solanales_species.txt")
+  
+species_meta <- taxonomy_metadata_Solanales[,c(1,6,7,15,16,17,18)]
+```
+
+## 2. Import sequences and metadata:
+```{r}
+setwd("/path/to/NLRdb/superasterids/Asterids/Solanales/nlrtracker")
+
+NLRtracker_files <- list.files(pattern = "_Domains.tsv", recursive = T)
+
+NLRtracker_list <- list()
+
+# Loop through each file
+for (i in seq_along(NLRtracker_files)) {
+  # Read the Excel file
+  NLRtracker_list[[i]] <- read_delim(NLRtracker_files[i])
+  
+  # Extract the specific part of the file name and add it as a new column
+  NLRtracker_list[[i]] <- NLRtracker_list[[i]] %>%
+    mutate('Assembly Accession' = gsub(".*_(GCA|GCF)_([0-9]+\\.[0-9]+)_.*", "\\1_\\2", basename(NLRtracker_files[i])))
+
+  # Print a message for each file (optional)
+  cat("Read file:", NLRtracker_files[i], "and added formatted filename column\n")
+}
+
+# merge all and add the metadata
+NLRtracker <- do.call(rbind,NLRtracker_list) %>% inner_join(species_meta, by = "Assembly Accession")
+
+NLRtracker <- NLRtracker %>% 
+  mutate(ID = paste(Species, seqname, Simple, sep = "_")) %>%
+  # Replace spaces in the "Species" column with underscores for the "ID" column
+  mutate(ID = gsub(" ", "_", ID))
+
+```
+
+## 3. Prepare the functions and prerequisites:
+```{r}
+# Function to remove duplicates based on "sequence" column
+remove_duplicates_by_sequence <- function(df) {
+  # Filter out rows with duplicate "sequence" values
+  df %>% distinct(sequence, .keep_all = TRUE)
+}
+
+domains <- c("CNL","CCNL","CCCNL","CNLO","CN","OCNL","CONL",
+             "NL","NLO","ONL",
+             "BCNL","BNL","BCN","BCCNL","BNLO","BOCNL","BCNLO","BBCNL","BBNL",
+             "RNL",
+             "TN","TNL","TNLO","TNLJ")
+
+```
+
+## 4. Merge the two orders and process:
+```{r}
+
+NLR <- filter(NLRtracker, NLRtracker$type == "CHAIN" & NLRtracker$Status == "NLR")
+
+# only keep the desired domain architectures and deduplicate NLRs
+NLR_filtered <- NLR[NLR$Simple %in% domains,]
+
+# extract the NBARC domains
+NBARC <- NLRtracker[NLRtracker$description == "NBARC",]
+
+NBARC_filtered <- NBARC[NBARC$seqname %in% NLR_filtered$seqname,]
+
+
+# filter out NLRs with truncated NBARC domain
+
+NBARC_filtered_len <- filter(NBARC_filtered, NBARC_filtered$end - NBARC_filtered$start > 250 & NBARC_filtered$end - NBARC_filtered$start < 400)
+
+
+NLR_filtered_len <- NLR_filtered[NLR_filtered$seqname %in% NBARC_filtered_len$seqname,]
+
+
+# convert the final data to biostring objects
+
+NLR_filtered_len_seq <- AAStringSet(NLR_filtered_len$sequence)
+NLR_filtered_len_seq@ranges@NAMES <- NLR_filtered_len$ID
+
+
+NBARC_filtered_len_seq <- AAStringSet(NBARC_filtered_len$sequence)
+NBARC_filtered_len_seq@ranges@NAMES <- NBARC_filtered_len$ID
+
+```
+
+## 5. Import RefPlantNLR and add it to the datasets and export:
+```{r}
+
+RefPlantNLR <- readAAStringSet("/path/to/RefPlantNLR.fasta")
+RefPlantNLR_NBARC <- readAAStringSet("/path/to/RefPlantNLR_NBARC.fasta")
+
+Solanales_ref <- c(NLR_filtered_len_seq, RefPlantNLR)
+Solanales_ref_NBARC <- c(NBARC_filtered_len_seq, RefPlantNLR_NBARC)
+
+# export for phylogenetic analysis
+writeXStringSet(Solanales_ref_NBARC,"/path/to/solanales_ref_nbarc.fasta")
+writeXStringSet(Solanales_ref,"/path/to/solanales_ref.fasta")
+
+```
+
+## 6. Extract the NRC clade and export for phylogenetics analysis:
+```{r}
+
+NRC_clade <- read.tree("/path/to/phylogeny/NRC_clade.tree")
+
+NRC_NBARC_ref_seq <- Solanales_ref_NBARC[Solanales_ref_NBARC@ranges@NAMES %in% NRC_clade$tip.label]
+NRC_NBARC_seq <- NBARC_filtered_len_seq[NBARC_filtered_len_seq@ranges@NAMES %in% NRC_clade$tip.label]
+
+NRC_ref_seq <- Solanales_ref[Solanales_ref@ranges@NAMES %in% NRC_clade$tip.label]
+NRC_seq <- NLR_filtered_len_seq[NLR_filtered_len_seq@ranges@NAMES %in% NRC_clade$tip.label]
+
+writeXStringSet(NRC_NBARC_ref_seq,"/path/to/phylogeny/NRC_NBARC.fasta")
+
+```
+
+## 7. Extract the NRC helpers and Prf clades:
+```{r}
+
+NRCH_clade <- read.tree("/path/to/phylogeny/NRCH_clade.tree")
+
+NRCH_NBARC_ref_seq <- Solanales_ref_NBARC[Solanales_ref_NBARC@ranges@NAMES %in% NRCH_clade$tip.label]
+NRCH_NBARC_seq <- NBARC_filtered_len_seq[NBARC_filtered_len_seq@ranges@NAMES %in% NRCH_clade$tip.label]
+
+NRCH_ref_seq <- Solanales_ref[Solanales_ref@ranges@NAMES %in% NRCH_clade$tip.label]
+NRCH_seq <- NLR_filtered_len_seq[NLR_filtered_len_seq@ranges@NAMES %in% NRCH_clade$tip.label]
+
+writeXStringSet(NRCH_NBARC_ref_seq,"/path/to/phylogeny/NRCH_NBARC.fasta")
+
+
+
+Prf_superclade <- read.tree("/path/to/phylogeny/Prf_superclade.tree")
+
+Prf_superclade_NBARC_ref_seq <- Solanales_ref_NBARC[Solanales_ref_NBARC@ranges@NAMES %in% Prf_superclade$tip.label]
+Prf_superclade_NBARC_seq <- NBARC_filtered_len_seq[NBARC_filtered_len_seq@ranges@NAMES %in% Prf_superclade$tip.label]
+
+Prf_superclade_ref_seq <- Solanales_ref[Solanales_ref@ranges@NAMES %in% Prf_superclade$tip.label]
+Prf_superclade_seq <- NLR_filtered_len_seq[NLR_filtered_len_seq@ranges@NAMES %in% Prf_superclade$tip.label]
+
+writeXStringSet(Prf_superclade_NBARC_ref_seq,"/path/to/phylogeny/Prf_superclade_NBARC.fasta")
+
+
+```
+
+
+## 8. Import the Prf and NRC3 clades and calculate the per species frequencies:
+```{r}
+# NRC3
+NRC3_clade <- read.tree("/path/to/phylogeny/NRC3_clade.tree")
+
+NRC3_clade_metadata <- NLR_filtered_len[NLR_filtered_len$ID %in% NRC3_clade$tip.label,]
+
+NRC3_species_freq <- table(NRC3_clade_metadata$Species) %>% as.data.frame() %>% set_names(c("species","frequency"))
+
+
+# Prf
+Prf_clade <- read.tree("/path/to/phylogeny/Prf_clade.tree")
+
+Prf_clade_metadata <- NLR_filtered_len[NLR_filtered_len$ID %in% Prf_clade$tip.label,]
+
+Prf_species_freq <- table(Prf_clade_metadata$Species) %>% as.data.frame() %>% set_names(c("species","frequency"))
+
+
+## Import the species tree generated from TimeTree.org
+species_tree <- read.tree("/path/to/Solanales_species_sorted.newick")
+
+species_list <- species_tree$tip.label %>% as.data.frame() %>% 
+  set_names("species") %>%
+  mutate(species = gsub("_"," ",species))
+
+
+# merge the dataframes
+species_freq <- species_list %>% 
+  left_join(NRC3_species_freq, by = "species") %>%
+  left_join(Prf_species_freq, by = "species") %>%
+  set_names(c("species","NRC3","Prf"))
+
+species_freq[is.na(species_freq)] <- 0
+
+species_freq$species <- factor(species_freq$species, levels = unique(rev(species_freq$species)))
+
+```
+
+### genome frequency:
+```{r}
+NRC3_genome_freq <- table(NRC3_clade_metadata$`Assembly Accession`) %>% as.data.frame() %>% set_names(c("genome","frequency"))
+Prf_genome_freq <- table(Prf_clade_metadata$`Assembly Accession`) %>% as.data.frame() %>% set_names(c("genome","frequency"))
+
+species_meta_freq <- species_meta %>%
+  left_join(NRC3_genome_freq, join_by(`Assembly Accession` == "genome")) %>%
+  left_join(Prf_genome_freq, join_by(`Assembly Accession` == "genome"))
+
+colnames(species_meta_freq)[colnames(species_meta_freq) %in% c("frequency.x","frequency.y")]  <- c("NRC3","Prf")
+
+species_meta_freq[is.na(species_meta_freq)] <- 0
+
+write_csv(species_meta_freq, "/path/to/NRC3_Prf_frequency.csv")
+
+```
+
+## 9. Plot the frequencies:
+```{r}
+theme_custom <- theme(
+  axis.text.x = element_blank(),
+  axis.ticks = element_blank(),
+  axis.title = element_blank(),
+  legend.position = "none",
+  panel.background = element_rect(fill = "transparent", colour = NA), # No fill, no border
+  plot.background = element_rect(fill = "transparent", colour = NA), # No fill, no border
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  plot.margin = unit(c(0,0,0,0), "lines"),
+  plot.title = element_blank(),
+  plot.subtitle = element_blank(),
+  plot.caption = element_blank(),
+  panel.border = element_blank()
+)
+```
+
+```{r}
+species_freq_melted <- melt(species_freq, id.vars = "species")
+
+# NRC3 & Prf
+ggplot(species_freq_melted, aes(x = species, y = variable)) +
+  geom_tile(aes(fill = value), colour = "white", linejoin = "round") +
+  geom_text(aes(label = sprintf("%d", value)), size = 5) +
+  scale_fill_gradient(low = "white", high = "#CC3333", limits = c(0, 4)) +
+  theme_minimal() +
+  theme_custom +
+  theme(axis.text.x = element_text(angle = 90)) +
+  coord_fixed()  # Make the tiles square
+
+ggsave(width = 15, height = 5, filename = "/path/to/species_freq.svg", dpi = "retina", device = "svg")
+
+```
+
